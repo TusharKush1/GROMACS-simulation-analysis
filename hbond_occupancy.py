@@ -2,13 +2,13 @@
 #Author : Tushar Kushwaha
 
 import mdtraj as md
-from collections import Counter
-import pandas as pd
+from collections import defaultdict
 from tqdm import tqdm
 import argparse
+import pandas as pd
 
 # === Parse arguments ===
-parser = argparse.ArgumentParser(description="Protein-ligand H-bond occupancy calculator")
+parser = argparse.ArgumentParser(description="Protein-ligand residue-wise H-bond occupancy (text + CSV)")
 parser.add_argument("--traj", type=str, default="md_0_10_fit.xtc",
                     help="Trajectory file name (default: md_0_10_fit.xtc)")
 parser.add_argument("--start", type=int, default=0,
@@ -24,45 +24,55 @@ print(f"✅ Starting from frame: {start_frame}")
 # === Load trajectory and topology ===
 traj = md.load(traj_file, top='start.gro')
 
-pair_counts = Counter()
 n_frames = traj.n_frames
+frame_range = range(start_frame, n_frames)
 
-# === Loop over frames with progress bar ===
-for i in tqdm(range(start_frame, n_frames), desc="Processing frames"):
+# === Track: protein residue -> frames where it H-bonded to ligand ===
+residue_frames = defaultdict(set)
+
+for i in tqdm(frame_range, desc="Processing frames"):
     hbonds = md.baker_hubbard(traj[i], freq=0.1, periodic=False)
-    for triplet in hbonds:
-        donor = triplet[0]
-        acceptor = triplet[2]
+    for donor, hydrogen, acceptor in hbonds:
         d_atom = traj.topology.atom(donor)
         a_atom = traj.topology.atom(acceptor)
+
         if (
             (d_atom.residue.is_protein and a_atom.residue.name == 'UNL') or
             (a_atom.residue.is_protein and d_atom.residue.name == 'UNL')
         ):
-            pair = tuple(sorted([donor, acceptor]))
-            pair_counts[pair] += 1
+            if d_atom.residue.is_protein:
+                prot_res = d_atom.residue
+            else:
+                prot_res = a_atom.residue
 
-# === Collect results ===
+            residue_frames[prot_res].add(i)
+
+# === Prepare results ===
+results = []
 rows = []
-for (d, a), count in pair_counts.items():
-    d_atom = traj.topology.atom(d)
-    a_atom = traj.topology.atom(a)
-    if d_atom.residue.is_protein:
-        prot, lig = d_atom, a_atom
-    else:
-        prot, lig = a_atom, d_atom
-    rows.append([
-        prot.residue.chain.index, prot.residue.name, prot.residue.index, prot.name,
-        lig.residue.name, lig.residue.index, lig.name,
-        100 * count / (n_frames - start_frame)
-    ])
 
+for res, frames in residue_frames.items():
+    occupancy = 100 * len(frames) / (n_frames - start_frame)
+    res_name = res.name.capitalize()
+    res_id = res.index
+    res_chain = res.chain.index
+    results.append( (occupancy, f"{res_name}{res_id} - {occupancy:.1f}%") )
+    rows.append([res_chain, res_name, res_id, occupancy])
+
+# === Sort by occupancy descending ===
+results.sort(reverse=True)
+rows.sort(reverse=True, key=lambda x: x[3])
+
+# === Write plain text output ===
+with open('protein_ligand_residuewise_hbonds.txt', 'w') as f:
+    for occ, line in results:
+        f.write(line + "\n")
+
+print("✅ Saved: protein_ligand_residuewise_hbonds.txt")
+
+# === Write CSV output ===
 df = pd.DataFrame(rows, columns=[
-    'Protein_Chain', 'Protein_ResName', 'Protein_ResID', 'Protein_Atom',
-    'Ligand_ResName', 'Ligand_ResID', 'Ligand_Atom',
-    'Occupancy_Percent'
+    'Protein_Chain', 'Protein_ResName', 'Protein_ResID', 'Occupancy_Percent'
 ])
-
-df.to_csv('protein_ligand_hbonds.csv', index=False)
-print('✅ Saved: protein_ligand_hbonds.csv')
-
+df.to_csv('protein_ligand_residuewise_hbonds.csv', index=False)
+print("✅ Saved: protein_ligand_residuewise_hbonds.csv")
