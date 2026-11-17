@@ -10,6 +10,11 @@ The trajectory should already be processed (molecules made whole and the
 complex centred, e.g. with `gmx trjconv -pbc mol -center`), because periodic
 images are not considered.
 
+Output:
+  <prefix>_residuewise_hbonds.txt   residues and occupancy
+  <prefix>_residuewise_hbonds.csv   the same as a table
+  <prefix>_hbonds.pml               PyMOL script showing ligand and residues
+
 Author: Tushar Kushwaha
 """
 
@@ -23,21 +28,23 @@ from tqdm import tqdm
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Protein-ligand residue-wise H-bond occupancy (text + CSV)"
+        description="Protein-ligand residue-wise H-bond occupancy + PyMOL script"
     )
     parser.add_argument("--traj", type=str, default="md_0_10_fit.xtc",
                         help="Trajectory file name (default: md_0_10_fit.xtc)")
     parser.add_argument("--top", type=str, default="start.gro",
-                        help="Topology/structure file matching the trajectory "
+                        help="Structure file matching the trajectory "
                              "(default: start.gro)")
     parser.add_argument("--ligand", type=str, default="UNL",
                         help="Residue name of the ligand (default: UNL)")
     parser.add_argument("--start", type=int, default=0,
                         help="Starting frame index (default: 0)")
-    parser.add_argument("--out", type=str,
-                        default="protein_ligand_residuewise_hbonds",
-                        help="Output file prefix "
-                             "(default: protein_ligand_residuewise_hbonds)")
+    parser.add_argument("--outprefix", "--out", dest="outprefix", type=str,
+                        default="pro_lig",
+                        help="Output prefix (default: pro_lig)")
+    parser.add_argument("--pdb", type=str, default=None,
+                        help="Structure for PyMOL to load "
+                             "(default: the --top file)")
     return parser.parse_args()
 
 
@@ -73,6 +80,42 @@ def occupancy_table(residue_frames, n_analysed):
     return df.sort_values("Occupancy_Percent", ascending=False).reset_index(drop=True)
 
 
+def write_pml(path, structure, ligand, df):
+    """Write a PyMOL script showing the ligand and its H-bonding residues."""
+    lines = [
+        f"load {structure}, complex",
+        "bg_color white",
+        "set antialias, 2",
+        "set ray_trace_mode, 1",
+        "set ray_trace_gain, 0.1",
+        "hide everything, all",
+        "show cartoon, complex",
+        f"show sticks, resn {ligand}",
+        f"color red, resn {ligand}",
+        "set stick_radius, 0.2",
+        "set label_color, black",
+        "set label_size, 14",
+        "",
+    ]
+    selections = []
+    for row in df.itertuples(index=False):
+        resn, resid = row.Protein_ResName, row.Protein_ResID
+        sel = f"hb_{resn}{resid}"
+        if sel in selections:
+            continue
+        selections.append(sel)
+        lines.append(f"select {sel}, resn {resn.upper()} and resi {resid}")
+        lines.append(f"show sticks, {sel}")
+        lines.append(f'label {sel} and name CA, '
+                     f'"{resn}{resid} - {row.Occupancy_Percent:.1f}%"')
+
+    lines.append("")
+    lines.append(" or ".join([f"orient resn {ligand}"] + selections))
+    lines.append("deselect")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def main():
     args = parse_args()
 
@@ -98,16 +141,20 @@ def main():
     residue_frames = residue_hbond_frames(traj, args.ligand, args.start)
     df = occupancy_table(residue_frames, n_analysed)
 
-    txt_file = f"{args.out}.txt"
+    txt_file = f"{args.outprefix}_residuewise_hbonds.txt"
     with open(txt_file, "w") as f:
         for row in df.itertuples(index=False):
             f.write(f"{row.Protein_ResName}{row.Protein_ResID} - "
                     f"{row.Occupancy_Percent:.1f}%\n")
     print(f"Saved: {txt_file}")
 
-    csv_file = f"{args.out}.csv"
+    csv_file = f"{args.outprefix}_residuewise_hbonds.csv"
     df.to_csv(csv_file, index=False)
     print(f"Saved: {csv_file}")
+
+    pml_file = f"{args.outprefix}_hbonds.pml"
+    write_pml(pml_file, args.pdb or args.top, args.ligand, df)
+    print(f"Saved: {pml_file}")
 
 
 if __name__ == "__main__":
