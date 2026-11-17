@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# Simulation data and analysis outputs
+*.xtc
+*.trr
+*.tpr
+*.edr
+*.cpt
+protein_ligand_residuewise_hbonds.txt
+protein_ligand_residuewise_hbonds.csv
